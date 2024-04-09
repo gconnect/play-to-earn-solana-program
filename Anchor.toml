@@ -1,17 +1,17 @@
 [toolchain]
 
 [features]
-seeds = false
+seeds = true
 skip-lint = false
 
-[programs.localnet]
+[programs.devnet]
 learnway = "4PPXwojpTCyAvCf2A9WerJr51H6bF9dT7qdPQeLwxukx"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Localnet"
+cluster = "Devnet"
 wallet = "/Users/gloryagatevure/.config/solana/id.json"
 
 [scripts]

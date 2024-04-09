@@ -1,104 +1,185 @@
 use anchor_lang::prelude::*;
+use anchor_spl::token::{self, MintTo, Transfer};
+use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
 declare_id!("4PPXwojpTCyAvCf2A9WerJr51H6bF9dT7qdPQeLwxukx");
 
 #[program]
-pub mod quiz_game {
+pub mod play_to_earn {
     use super::*;
 
-    #[derive(Accounts)]
-    pub struct CreateRoom<'info> {
-        #[account(signer)]
-        user: AccountInfo<'info>,
-        #[account(mut)]
-        user_token_account: Account<'info, TokenAccount>,
-        #[account(mut)]
-        admin_token_account: Account<'info, TokenAccount>,
-        #[account(mut)]
-        token_program: AccountInfo<'info>,
-        #[account("mint")]
-        token_mint: Account<'info, Mint>,
+    pub fn initialize(ctx: Context<Initialize>, start_slot: u64, end_slot: u64) -> Result<()> {
+        msg!("Instruction: Initialize");
+        let pool_info = &mut ctx.accounts.pool_info;
+        pool_info.admin = ctx.accounts.admin.key();
+        pool_info.start_slot = start_slot;
+        pool_info.end_slot = end_slot;
+        pool_info.token = ctx.accounts.staking_token.key();
+        Ok(())
     }
 
-    pub fn create_room(ctx: Context<CreateRoom>, amount: u64) -> ProgramResult {
-        // Transfer tokens from the user to the admin account
-        token::transfer(
-            ctx.accounts.token_program.clone(),
-            ctx.accounts.user_token_account.clone(),
-            ctx.accounts.admin_token_account.clone(),
-            amount,
-        )?;
 
-        // Perform other operations to create the room
-        // ...
+    pub fn stake_token(ctx: Context<StakeToken>, amount: u64) -> Result<()> {
+       msg!("Instruction: Stake");
+        let user_info = &mut ctx.accounts.user_info;
+        let clock = Clock::get()?;
+        if user_info.amount > 0 {
+            let reward = (clock.slot - user_info.deposit_slot) - user_info.reward_debt;
+            let cpi_accounts = MintTo {
+                mint: ctx.accounts.staking_token.to_account_info(),
+                to: ctx.accounts.user_staking_wallet.to_account_info(),
+                authority: ctx.accounts.admin.to_account_info(),
+            };
+            let cpi_program = ctx.accounts.token_program.to_account_info();
+            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+            token::mint_to(cpi_ctx, reward)?;
+        }
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.user_staking_wallet.to_account_info(),
+            to: ctx.accounts.admin_staking_wallet.to_account_info(),
+            authority: ctx.accounts.user.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        token::transfer(cpi_ctx, amount)?;
+        user_info.amount += amount;
+        user_info.deposit_slot = clock.slot;
+        user_info.reward_debt = 0;
+        Ok(())
+    }
 
+    pub fn unstake(ctx: Context<Unstake>) -> Result<()> {
+        msg!("Instruction: Unstake");
+        let user_info = &mut ctx.accounts.user_info;
+        let clock = Clock::get()?;
+        let reward = (clock.slot - user_info.deposit_slot) - user_info.reward_debt;
+        let cpi_accounts = MintTo {
+            mint: ctx.accounts.staking_token.to_account_info(),
+            to: ctx.accounts.user_staking_wallet.to_account_info(),
+            authority: ctx.accounts.admin.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        token::mint_to(cpi_ctx, reward)?;
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.admin_staking_wallet.to_account_info(),
+            to: ctx.accounts.user_staking_wallet.to_account_info(),
+            authority: ctx.accounts.admin.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        token::transfer(cpi_ctx, user_info.amount)?;
+        user_info.amount = 0;
+        user_info.deposit_slot = 0;
+        user_info.reward_debt = 0;
+        Ok(())
+    }
+
+    pub fn pay_winner(ctx: Context<ClaimReward>) -> Result<()> {
+        msg!("Instruction: Claim Reward");
+        let user_info = &mut ctx.accounts.user_info;
+        let clock = Clock::get()?;
+        let reward = (clock.slot - user_info.deposit_slot) - user_info.reward_debt;
+        let cpi_accounts = MintTo {
+            mint: ctx.accounts.staking_token.to_account_info(),
+            to: ctx.accounts.user_staking_wallet.to_account_info(),
+            authority: ctx.accounts.admin.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        token::mint_to(cpi_ctx, reward)?;
+        user_info.reward_debt += reward;
+        Ok(())
+    }
+
+    pub fn set_player_score() -> Result<()> {
+        msg!("Winner set")
         Ok(())
     }
 
     #[derive(Accounts)]
-    pub struct JoinRoom<'info> {
-        #[account(signer)]
-        user: AccountInfo<'info>,
+    pub struct Initialize<'info> {
         #[account(mut)]
-        user_token_account: Account<'info, TokenAccount>,
+        pub admin: Signer<'info>,
+        #[account(init, payer = admin, space = 8 + PoolInfo::LEN)]
+        pub pool_info: Account<'info, PoolInfo>,
         #[account(mut)]
-        admin_token_account: Account<'info, TokenAccount>,
+        pub staking_token: Account<'info, Mint>,
         #[account(mut)]
-        token_program: AccountInfo<'info>,
+        pub admin_staking_wallet: Account<'info, TokenAccount>,
+        pub system_program: Program<'info, System>,
     }
-
-    pub fn join_room(ctx: Context<JoinRoom>, amount: u64) -> ProgramResult {
-        // Transfer tokens from the user to the admin account
-        token::transfer(
-            ctx.accounts.token_program.clone(),
-            ctx.accounts.user_token_account.clone(),
-            ctx.accounts.admin_token_account.clone(),
-            amount,
-        )?;
-
-        // Perform other operations to join the room
-        // ...
-
-        Ok(())
-    }
-
     #[derive(Accounts)]
-    pub struct StartGame<'info> {
-        #[account(signer)]
-        user: AccountInfo<'info>,
+    pub struct Stake<'info> {
         #[account(mut)]
-        user_token_account: Account<'info, TokenAccount>,
+        pub user: Signer<'info>,
+        /// CHECK:
         #[account(mut)]
-        admin_token_account: Account<'info, TokenAccount>,
+        pub admin: AccountInfo<'info>,
+        #[account(init, payer = user, space = 8 + UserInfo::LEN)]
+        pub user_info: Account<'info, UserInfo>,
         #[account(mut)]
-        token_program: AccountInfo<'info>,
+        pub user_staking_wallet: Account<'info, TokenAccount>,
+        #[account(mut)]
+        pub admin_staking_wallet: Account<'info, TokenAccount>,
+        #[account(mut)]
+        pub staking_token: Account<'info, Mint>,
+        pub token_program: Program<'info, Token>,
+        pub system_program: Program<'info, System>,
     }
-
-    pub fn start_game(ctx: Context<StartGame>) -> ProgramResult {
-        // Perform operations to start the game
-        // ...
-
-        Ok(())
-    }
-
     #[derive(Accounts)]
-    pub struct AnswerQuestion<'info> {
-        #[account(signer)]
-        user: AccountInfo<'info>,
+    pub struct Unstake<'info> {
+        /// CHECK:
         #[account(mut)]
-        user_token_account: Account<'info, TokenAccount>,
+        pub user: AccountInfo<'info>,
+        /// CHECK:
         #[account(mut)]
-        admin_token_account: Account<'info, TokenAccount>,
+        pub admin: AccountInfo<'info>,
         #[account(mut)]
-        token_program: AccountInfo<'info>,
+        pub user_info: Account<'info, PlayerInfo>,
+        #[account(mut)]
+        pub user_staking_wallet: Account<'info, TokenAccount>,
+        #[account(mut)]
+        pub admin_staking_wallet: Account<'info, TokenAccount>,
+        #[account(mut)]
+        pub staking_token: Account<'info, Mint>,
+        pub token_program: Program<'info, Token>,
     }
-
-    pub fn answer_question(ctx: Context<AnswerQuestion>) -> ProgramResult {
-        // Perform operations to answer a question
-        // ...
-
-        Ok(())
+    #[derive(Accounts)]
+    pub struct ClaimReward<'info> {
+        /// CHECK:
+        #[account(mut)]
+        pub user: AccountInfo<'info>,
+        /// CHECK:
+        #[account(mut)]
+        pub admin: AccountInfo<'info>,
+        #[account(mut)]
+        pub user_info: Account<'info, PlayerInfo>,
+        #[account(mut)]
+        pub user_staking_wallet: Account<'info, TokenAccount>,
+        #[account(mut)]
+        pub admin_staking_wallet: Account<'info, TokenAccount>,
+        #[account(mut)]
+        pub staking_token: Account<'info, Mint>,
+        pub token_program: Account<'info, Token>,
     }
-
-    // Other game-related functions...
+    #[account]
+    pub struct PoolInfo {
+        pub admin: Pubkey,
+        pub start_slot: u64,
+        pub end_slot: u64,
+        pub token: Pubkey,
+    }
+    #[account]
+    pub struct PlayerInfo {
+        pub amount: u64,
+        pub reward_debt: u64,
+        pub deposit_slot: u64,
+    }
+    impl PlayerInfo {
+        pub const LEN: usize = 8 + 8 + 8;
+    }
+    impl PoolInfo {
+        pub const LEN: usize = 32 + 8 + 8 + 32;
+    }
 }
